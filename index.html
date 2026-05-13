@@ -780,14 +780,20 @@ function processCSV(text) {
 // ── MONTH FILTER ─────────────────────────────────────────────
 function getRowPeriod(row) {
   const d = row['date_received'] || '';
-  return d.length >= 7 ? d.substring(0, 7) : 'unknown';
+  // Must look like YYYY-MM with a plausible year (2000-2099)
+  if (/^20\d{2}-\d{2}/.test(d)) return d.substring(0, 7);
+  return 'unknown';
 }
 
 function populateMonthFilter() {
   const counts = {};
   allRows.forEach(r => { const p = getRowPeriod(r); counts[p] = (counts[p]||0)+1; });
   const sorted = Object.entries(counts)
-    .filter(([k]) => k !== 'unknown')
+    .filter(([k]) => {
+      if (k === 'unknown') return false;
+      const month = parseInt(k.substring(5, 7), 10);
+      return month >= 1 && month <= 12;
+    })
     .sort((a,b) => b[0].localeCompare(a[0]));
   const maxC = Math.max(...sorted.map(([,c])=>c));
   const autoSelect = (sorted.find(([,c]) => c >= Math.min(500, maxC*0.25)) || sorted[0])[0];
