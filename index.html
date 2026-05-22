@@ -208,6 +208,20 @@
     padding: 10px 12px; border: 0.5px solid var(--border2); border-radius: var(--radius);
     background: var(--bg2); color: var(--text); resize: vertical; line-height: 1.5;
   }
+
+  /* ── FILED NOTES ── */
+  tr.data-row.filed:not(.selected) { color: var(--text3); }
+  tr.data-row.filed:not(.selected) td { color: var(--text3); }
+  .filed-date { font-size: 11px; color: var(--text3); font-style: italic; margin-top: 2px; }
+  tr.data-row.filed:not(.selected) .filed-date { color: var(--border2); }
+  #undo-bar {
+    font-size: 12px; color: var(--text2); padding: 4px 0;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #undo-btn {
+    font-size: 12px; height: 24px; padding: 2px 10px;
+    border-color: var(--text3); color: var(--text2);
+  }
 </style>
 </head>
 <body>
@@ -319,6 +333,7 @@ const PROFILES_URL     = '';   // unused — profiles stored in localStorage
 const CSV_URL          = 'briefingt.csv';
 
 const STORAGE_KEY = 'atip_profiles_v1';
+const FILED_KEY   = 'atip_filed_v1';    // { tracking_number: date_string }
 
 // ── ALL DEPARTMENTS ──────────────────────────────────────────
 const ALL_DEPTS = [
@@ -419,6 +434,7 @@ let flagged       = {};
 let activeDeptTab = null;
 let modalChecked  = new Set();
 let isNewProfile  = false;
+let filed         = {};   // { tracking_number: 'YYYY-MM-DD' }
 
 // ── PROFILE STORAGE (Sheet + localStorage cache) ─────────────
 function cacheProfiles() {
@@ -430,6 +446,41 @@ function loadCachedProfiles() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) { profiles = JSON.parse(raw); rebuildDropdown(); }
   } catch(e) {}
+}
+
+// ── FILED STORAGE ────────────────────────────────────────────
+function loadFiled() {
+  try {
+    const raw = localStorage.getItem(FILED_KEY);
+    filed = raw ? JSON.parse(raw) : {};
+  } catch(e) { filed = {}; }
+}
+
+function saveFiled() {
+  try { localStorage.setItem(FILED_KEY, JSON.stringify(filed)); } catch(e) {}
+}
+
+function recordFiled(keys) {
+  // keys: array of rowKey strings
+  const today = new Date().toISOString().substring(0, 10);
+  keys.forEach(key => {
+    const num = key.split('||')[0];
+    if (num) filed[num] = today;
+  });
+  saveFiled();
+}
+
+function undoFiled(keys) {
+  keys.forEach(key => {
+    const num = key.split('||')[0];
+    delete filed[num];
+  });
+  saveFiled();
+}
+
+function isRowFiled(row) {
+  const num = (row['tracking_number'] || '').trim();
+  return num && filed[num] ? filed[num] : null;
 }
 
 async function loadProfiles() {
@@ -867,14 +918,16 @@ function renderTable() {
   let html = '';
   orgEntries.forEach(([slug, orgRows]) => {
     const label  = DEPT_MAP[slug] || slug;
-    const fCount = orgRows.filter(r => flagged[rowKey(r)]).length;
-    const sCount = orgRows.filter(r => selectedKeys.has(rowKey(r))).length;
+    const fCount  = orgRows.filter(r => flagged[rowKey(r)]).length;
+    const sCount  = orgRows.filter(r => selectedKeys.has(rowKey(r))).length;
+    const fiCount = orgRows.filter(r => isRowFiled(r)).length;
     html += `<div class="dept-section">
       <div class="dept-header" onclick="toggleSection('${esc(slug)}')">
         <span>${esc(label)}</span>
         <span class="dept-count">${orgRows.length} notes</span>
-        ${fCount ? `<span class="badge b-amber">✦ ${fCount} flagged</span>` : ''}
-        ${sCount ? `<span class="badge b-blue">${sCount} selected</span>` : ''}
+        ${fCount  ? `<span class="badge b-amber">✦ ${fCount} flagged</span>` : ''}
+        ${sCount  ? `<span class="badge b-blue">${sCount} selected</span>` : ''}
+        ${fiCount ? `<span class="badge b-green">✓ ${fiCount} filed</span>` : ''}
         <span class="dept-toggle" id="toggle-${CSS.escape(slug)}">▾</span>
       </div>
       <div id="rows-${CSS.escape(slug)}">
@@ -884,17 +937,18 @@ function renderTable() {
         </tr></thead><tbody>`;
 
     orgRows.forEach(r => {
-      const key   = rowKey(r);
-      const sel   = selectedKeys.has(key);
-      const f     = flagged[key];
+      const key        = rowKey(r);
+      const sel        = selectedKeys.has(key);
+      const f          = flagged[key];
+      const filedDate  = isRowFiled(r);
       const num   = r['tracking_number'] || '';
       const title = r['title_en'] || '(no title)';
       const date  = (r['date_received']||'').substring(0,10);
-      html += `<tr class="data-row${sel?' selected':''}${f&&!sel?' flagged':''}" data-key="${esc(key)}">
+      html += `<tr class="data-row${sel?' selected':''}${f&&!sel&&!filedDate?' flagged':''}${filedDate&&!sel?' filed':''}" data-key="${esc(key)}">
         <td class="col-sel"><input type="checkbox" class="sel-check" ${sel?'checked':''}></td>
         <td class="col-flag">${f?`<span class="flag-star" title="${esc(f)}">✦</span>`:''}</td>
         <td class="col-num">${esc(num)}</td>
-        <td class="col-title">${esc(title)}${f?`<div class="flag-reason">${esc(f)}</div>`:''}</td>
+        <td class="col-title">${esc(title)}${f?`<div class="flag-reason">${esc(f)}</div>`:''}${filedDate?`<div class="filed-date">✓ copied ${esc(filedDate)}</div>`:''}</td>
         <td class="col-date">${esc(date)}</td>
       </tr>`;
     });
@@ -968,17 +1022,49 @@ function renderAtipPanel() {
 function switchTab(slug) { activeDeptTab = slug; renderAtipPanel(); }
 
 function copyAtip() {
-  navigator.clipboard.writeText(document.getElementById('atip-text').value).then(() => {
+  const text = document.getElementById('atip-text').value;
+  // Capture which keys are in the active dept tab right now
+  const copiedKeys = [...selectedKeys].filter(key => {
+    const row = allRows.find(r => rowKey(r) === key);
+    if (!row) return false;
+    return (row['owner_org']||'').toLowerCase().trim() === activeDeptTab;
+  });
+
+  navigator.clipboard.writeText(text).then(() => {
+    // Record as filed
+    recordFiled(copiedKeys);
+
+    // Update button
     const btn = document.getElementById('copy-btn');
     const orig = btn.textContent;
     btn.textContent = '✓ Copied';
     setTimeout(() => btn.textContent = orig, 1800);
+
+    // Show undo bar in status
+    const statusBar = document.getElementById('status-bar');
+    const prevStatus = statusBar.innerHTML;
+    let undoTimer = setTimeout(() => {
+      renderTable(); // re-render to show filed markers, clear undo bar
+    }, 8000);
+
+    statusBar.innerHTML = `<div id="undo-bar">
+      <span>✓ ${copiedKeys.length} note${copiedKeys.length===1?'':'s'} marked as copied</span>
+      <button id="undo-btn" onclick="undoCopy(${JSON.stringify(copiedKeys)}, ${JSON.stringify(prevStatus)}, ${undoTimer})">Undo</button>
+    </div>`;
   });
+}
+
+function undoCopy(keys, prevStatus, timer) {
+  clearTimeout(timer);
+  undoFiled(keys);
+  document.getElementById('status-bar').innerHTML = prevStatus;
+  renderTable();
 }
 
 // ── ROW CLICK (delegated) ────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadProfiles();
+  loadFiled();
 
   document.getElementById('table-area').addEventListener('click', e => {
     const row = e.target.closest('tr.data-row'); if (!row) return;
