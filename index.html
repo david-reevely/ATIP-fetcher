@@ -214,14 +214,12 @@
   tr.data-row.filed:not(.selected) td { color: var(--text3); }
   .filed-date { font-size: 11px; color: var(--text3); font-style: italic; margin-top: 2px; }
   tr.data-row.filed:not(.selected) .filed-date { color: var(--border2); }
-  #undo-bar {
-    font-size: 12px; color: var(--text2); padding: 4px 0;
-    display: flex; align-items: center; gap: 8px;
+  .unfiled-btn {
+    font-size: 11px; color: var(--text3); background: none; border: none;
+    cursor: pointer; padding: 0 0 0 4px; line-height: 1; height: auto;
+    vertical-align: middle; opacity: 0.6;
   }
-  #undo-btn {
-    font-size: 12px; height: 24px; padding: 2px 10px;
-    border-color: var(--text3); color: var(--text2);
-  }
+  .unfiled-btn:hover { opacity: 1; color: var(--red); background: none; }
 </style>
 </head>
 <body>
@@ -948,7 +946,7 @@ function renderTable() {
         <td class="col-sel"><input type="checkbox" class="sel-check" ${sel?'checked':''}></td>
         <td class="col-flag">${f?`<span class="flag-star" title="${esc(f)}">✦</span>`:''}</td>
         <td class="col-num">${esc(num)}</td>
-        <td class="col-title">${esc(title)}${f?`<div class="flag-reason">${esc(f)}</div>`:''}${filedDate?`<div class="filed-date">✓ copied ${esc(filedDate)}</div>`:''}</td>
+        <td class="col-title">${esc(title)}${f?`<div class="flag-reason">${esc(f)}</div>`:''}${filedDate?`<div class="filed-date">✓ copied ${esc(filedDate)}<button class="unfiled-btn" data-unfiled="${esc(key)}" title="Clear filed marker">×</button></div>`:''}</td>
         <td class="col-date">${esc(date)}</td>
       </tr>`;
     });
@@ -1023,7 +1021,6 @@ function switchTab(slug) { activeDeptTab = slug; renderAtipPanel(); }
 
 function copyAtip() {
   const text = document.getElementById('atip-text').value;
-  // Capture which keys are in the active dept tab right now
   const copiedKeys = [...selectedKeys].filter(key => {
     const row = allRows.find(r => rowKey(r) === key);
     if (!row) return false;
@@ -1031,34 +1028,13 @@ function copyAtip() {
   });
 
   navigator.clipboard.writeText(text).then(() => {
-    // Record as filed
     recordFiled(copiedKeys);
-
-    // Update button
     const btn = document.getElementById('copy-btn');
     const orig = btn.textContent;
     btn.textContent = '✓ Copied';
     setTimeout(() => btn.textContent = orig, 1800);
-
-    // Show undo bar in status
-    const statusBar = document.getElementById('status-bar');
-    const prevStatus = statusBar.innerHTML;
-    let undoTimer = setTimeout(() => {
-      renderTable(); // re-render to show filed markers, clear undo bar
-    }, 8000);
-
-    statusBar.innerHTML = `<div id="undo-bar">
-      <span>✓ ${copiedKeys.length} note${copiedKeys.length===1?'':'s'} marked as copied</span>
-      <button id="undo-btn" onclick="undoCopy(${JSON.stringify(copiedKeys)}, ${JSON.stringify(prevStatus)}, ${undoTimer})">Undo</button>
-    </div>`;
+    renderTable();
   });
-}
-
-function undoCopy(keys, prevStatus, timer) {
-  clearTimeout(timer);
-  undoFiled(keys);
-  document.getElementById('status-bar').innerHTML = prevStatus;
-  renderTable();
 }
 
 // ── ROW CLICK (delegated) ────────────────────────────────────
@@ -1067,6 +1043,13 @@ document.addEventListener('DOMContentLoaded', () => {
   loadFiled();
 
   document.getElementById('table-area').addEventListener('click', e => {
+    // Handle × unfiled button
+    if (e.target.closest('.unfiled-btn')) {
+      e.stopPropagation();
+      const key = e.target.closest('.unfiled-btn').dataset.unfiled;
+      if (key) { undoFiled([key]); renderTable(); }
+      return;
+    }
     const row = e.target.closest('tr.data-row'); if (!row) return;
     const key = row.dataset.key; if (!key) return;
     if (selectedKeys.has(key)) selectedKeys.delete(key); else selectedKeys.add(key);
