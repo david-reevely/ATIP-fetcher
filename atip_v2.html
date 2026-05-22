@@ -218,9 +218,39 @@
   .share-section p { font-size: 12px; color: var(--text2); margin-bottom: 6px; }
   .share-row { display: flex; gap: 6px; }
   .share-row input { flex: 1; font-family: var(--mono); font-size: 11px; }
+
+  /* ── PASSWORD OVERLAY ── */
+  #pw-overlay {
+    position: fixed; inset: 0; z-index: 999;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #pw-box {
+    background: var(--bg2);
+    border: 0.5px solid var(--border2);
+    border-radius: 10px;
+    padding: 2rem 2.5rem;
+    width: min(360px, 90vw);
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  #pw-box h2 { font-size: 15px; font-weight: 600; }
+  #pw-box p  { font-size: 13px; color: var(--text2); }
+  #pw-input  { width: 100%; font-family: var(--mono); letter-spacing: 0.05em; }
+  #pw-error  { font-size: 12px; color: var(--red); min-height: 16px; }
+  #pw-submit { width: 100%; }
 </style>
 </head>
 <body>
+
+<div id="pw-overlay">
+  <div id="pw-box">
+    <h2>Briefing Notes — ATIP Tool</h2>
+    <p>Enter the password to continue.</p>
+    <input type="password" id="pw-input" placeholder="Password" onkeydown="if(event.key==='Enter')checkPassword()">
+    <div id="pw-error"></div>
+    <button id="pw-submit" class="btn-primary" onclick="checkPassword()">Continue</button>
+  </div>
+</div>
 <div id="app">
   <h1>Briefing Notes — ATIP Tool</h1>
   <p class="subtitle">Federal government briefing note catalogue · The Logic</p>
@@ -317,7 +347,7 @@
 <script>
 // ── CONFIGURATION ─────────────────────────────────────────────
 const CLAUDE_PROXY_URL = 'https://script.google.com/macros/s/AKfycbxnn_2aW9m3E2N8OSUYs9jZhEG6ViT2gLIhEqu4ATFnwDvRDFEQ6fEd7_SKv0ryzsc/exec';
-const SHEET_URL        = 'https://script.google.com/macros/s/AKfycby-ap03kAvZBMuzE3LccF--96nV6GZIq6s8wRdjCuZciU62BAtsYJLvqKW_Vet6JrXb/exec';
+const SHEET_URL        = 'YOUR_V2_APPS_SCRIPT_URL_HERE';
 const CSV_URL          = 'briefingt.csv';
 const STORAGE_KEY      = 'atip_v2_profiles';   // localStorage cache
 
@@ -1031,6 +1061,37 @@ async function flagWithClaude() {
   if(errors&&!Object.keys(flagged).length) setStatus('⚠ Flagging failed — check console.');
   renderTable();
 }
+
+// ── PASSWORD ─────────────────────────────────────────────────
+const PW_HASH = 'b99ca7350dc617a4a9a844222d0783796dfe154ed696c127d2f48305c2babe76';
+const PW_SESSION_KEY = 'atip_auth';
+
+async function checkPassword() {
+  const val = document.getElementById('pw-input').value;
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(val));
+  const hash = Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  if (hash === PW_HASH) {
+    sessionStorage.setItem(PW_SESSION_KEY, '1');
+    document.getElementById('pw-overlay').style.display = 'none';
+  } else {
+    const err = document.getElementById('pw-error');
+    err.textContent = 'Incorrect password.';
+    document.getElementById('pw-input').value = '';
+    document.getElementById('pw-input').focus();
+    setTimeout(() => err.textContent = '', 3000);
+  }
+}
+
+// Check on load — skip prompt if already authenticated this session
+(function() {
+  if (sessionStorage.getItem(PW_SESSION_KEY) === '1') {
+    document.getElementById('pw-overlay').style.display = 'none';
+  } else {
+    // Delay focus slightly so the overlay renders first
+    setTimeout(() => document.getElementById('pw-input').focus(), 100);
+  }
+})();
+
 </script>
 </body>
 </html>
