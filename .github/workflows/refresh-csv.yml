@@ -34,6 +34,45 @@ jobs:
             exit 1
           fi
 
+      - name: Filter to last 5 years
+        run: |
+          python3 - <<'PYEOF'
+          import csv
+          from datetime import date, timedelta
+
+          cutoff = date.today() - timedelta(days=5*365)
+          cutoff_str = cutoff.strftime('%Y-%m-%d')
+
+          with open('briefingt.csv', newline='', encoding='utf-8-sig') as f:
+              reader = csv.DictReader(f)
+              fieldnames = reader.fieldnames
+              rows = []
+              kept = 0
+              dropped = 0
+              for row in reader:
+                  d = row.get('date_received', '').strip()
+                  # Drop rows with a valid date older than the cutoff
+                  # Rows with missing or malformed dates are kept
+                  if d and len(d) >= 10 and d[:10] < cutoff_str:
+                      dropped += 1
+                      continue
+                  rows.append(row)
+                  kept += 1
+
+          with open('briefingt.csv', 'w', newline='', encoding='utf-8') as f:
+              writer = csv.DictWriter(f, fieldnames=fieldnames)
+              writer.writeheader()
+              writer.writerows(rows)
+
+          print(f"Kept {kept} rows, dropped {dropped} rows older than {cutoff_str}")
+          PYEOF
+
+      - name: Report file size
+        run: |
+          LINES=$(wc -l < briefingt.csv)
+          SIZE=$(du -sh briefingt.csv | cut -f1)
+          echo "Final file: $LINES lines, $SIZE"
+
       - name: Commit if changed
         run: |
           git config user.name  "github-actions[bot]"
