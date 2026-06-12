@@ -136,6 +136,8 @@
   .flag-star   { color: var(--amber); font-size: 13px; }
   .flag-reason { font-size: 11px; color: var(--amber); font-style: italic; margin-top: 2px; }
   .sel-check   { width: 14px; height: 14px; cursor: pointer; accent-color: var(--blue); }
+  .ext-link    { font-size: 11px; color: var(--blue); text-decoration: none; margin-left: 4px; opacity: 0.55; }
+  .ext-link:hover { opacity: 1; }
   .empty { text-align: center; color: var(--text3); padding: 2.5rem 0; font-size: 13px; }
 
   /* ── COPIED MARKERS ── */
@@ -407,6 +409,7 @@ const ALL_DEPTS = [
   ["cic",           "Immigration, Refugees and Citizenship Canada"],
   ["jus",           "Department of Justice Canada"],
   ["lac-bac",       "Library and Archives Canada"],
+  ["org231",        "Law Commission of Canada"],
   ["mpcc-cppm",     "Military Police Complaints Commission of Canada"],
   ["nrc-cnrc",      "National Research Council Canada"],
   ["nrcan-rncan",   "Natural Resources Canada"],
@@ -457,8 +460,10 @@ let flagged       = {};
 let activeDeptTab = null;
 let modalChecked  = new Set();
 let isNewProfile  = false;
-// copiedRecords: { tracking_number: [{reporter, date_copied}, ...] }
+// copiedRecords: { 'num||deptLabel': [{reporter, date_copied}, ...] }
 let copiedRecords = {};
+let seenKeys      = null;   // Set of rowKeys seen on previous fetch (per profile), or null if first run
+let newKeys       = new Set();  // rowKeys that are new this fetch
 
 // ── SHEET API ─────────────────────────────────────────────────
 async function sheetGet(params) {
@@ -531,7 +536,8 @@ function onProfileChange() {
   if (activeProfile) {
     document.getElementById('fetch-btn').disabled = false;
     const n = profiles[activeProfile].length;
-    setStatus('Profile "' + activeProfile + '" — ' + n + ' department' + (n===1?'':'s') + '. Click Fetch to load briefing notes.');
+    setStatus('Profile "' + activeProfile + '" — ' + n + ' department' + (n===1?'':'s') + '.');
+    fetchData();   // auto-load on profile selection
   } else {
     document.getElementById('fetch-btn').disabled = true;
     setStatus('Select or create a profile to begin.');
@@ -681,14 +687,21 @@ function importShareString() {
 }
 
 // ── COPIED RECORDS ────────────────────────────────────────────
+function copiedKey(num, deptLabel) { return num + '||' + deptLabel; }
+
+function rowDeptLabel(row) {
+  const slug = (row['owner_org']||'').toLowerCase().trim();
+  return DEPT_MAP[slug] || row['owner_org'] || '';
+}
+
 async function loadCopiedRecords() {
   try {
     const d = await sheetGet({ action: 'list_copied' });
     copiedRecords = {};
     (d.records || []).forEach(rec => {
-      const num = rec.tracking_number;
-      if (!copiedRecords[num]) copiedRecords[num] = [];
-      copiedRecords[num].push({ reporter: rec.reporter, date_copied: rec.date_copied });
+      const key = copiedKey(rec.tracking_number, rec.department);
+      if (!copiedRecords[key]) copiedRecords[key] = [];
+      copiedRecords[key].push({ reporter: rec.reporter, date_copied: rec.date_copied });
     });
   } catch(e) {
     console.warn('Could not load copied records:', e.message);
@@ -697,7 +710,8 @@ async function loadCopiedRecords() {
 
 function getCopiedForRow(row) {
   const num = (row['tracking_number'] || '').trim();
-  return copiedRecords[num] || [];
+  if (!num) return [];
+  return copiedRecords[copiedKey(num, rowDeptLabel(row))] || [];
 }
 
 // ── CSV PARSING ───────────────────────────────────────────────
@@ -752,9 +766,32 @@ function loadFile(input) {
   reader.onload=e=>processCSV(e.target.result);
   reader.readAsText(f,'utf-8');
 }
+function seenStorageKey() { return 'atip_v2_seen_' + (activeProfile||''); }
+
+function computeNewKeys() {
+  newKeys = new Set();
+  if (!activeProfile) return;
+  const depts = new Set(profiles[activeProfile]||[]);
+  const currentKeys = [];
+  allRows.forEach(r => {
+    const slug=(r['owner_org']||'').toLowerCase().trim();
+    if (!depts.has(slug)) return;
+    currentKeys.push(rowKey(r));
+  });
+  let prev = null;
+  try {
+    const raw = localStorage.getItem(seenStorageKey());
+    if (raw) prev = new Set(JSON.parse(raw));
+  } catch(e) {}
+  if (prev) currentKeys.forEach(k => { if (!prev.has(k)) newKeys.add(k); });
+  // Save current snapshot for next time
+  try { localStorage.setItem(seenStorageKey(), JSON.stringify(currentKeys)); } catch(e) {}
+}
+
 function processCSV(text) {
   allRows=parseCSV(text);
   if (!allRows.length) { setStatus('⚠ No data found.'); return; }
+  computeNewKeys();
   document.getElementById('fallback-area').style.display='none';
   populateMonthFilter();
   ['month-sel','search-box','sel-all-btn','clear-btn','flag-btn'].forEach(id=>document.getElementById(id).style.display='');
@@ -831,6 +868,7 @@ function renderTable() {
     const sCount=orgRows.filter(r=>selectedKeys.has(rowKey(r))).length;
     const cMineCount=orgRows.filter(r=>getCopiedForRow(r).some(c=>c.reporter===activeProfile)).length;
     const cOthersCount=orgRows.filter(r=>getCopiedForRow(r).some(c=>c.reporter!==activeProfile)).length;
+    const newCount=orgRows.filter(r=>newKeys.has(rowKey(r))).length;
 
     html+=`<div class="dept-section">
       <div class="dept-header" onclick="toggleSection('${esc(slug)}')">
@@ -840,6 +878,7 @@ function renderTable() {
         ${sCount?`<span class="badge b-blue">${sCount} selected</span>`:''}
         ${cMineCount?`<span class="badge b-green">✓ ${cMineCount} copied by you</span>`:''}
         ${cOthersCount?`<span class="badge b-purple">● ${cOthersCount} copied by colleagues</span>`:''}
+        ${newCount?`<span class="badge b-green">${newCount} new</span>`:''}
         <span class="dept-toggle" id="toggle-${CSS.escape(slug)}">▾</span>
       </div>
       <div id="rows-${CSS.escape(slug)}">
@@ -872,7 +911,7 @@ function renderTable() {
       let copiedHtml='';
       if (hasMine) {
         mineCopies.forEach(c=>{
-          copiedHtml+=`<span class="copied-label"><span class="copied-mine-label">✓ copied ${esc(c.date_copied)}</span><button class="uncopy-btn" data-num="${esc(num)}" data-reporter="${esc(c.reporter)}" title="Remove copied marker">×</button></span>`;
+          copiedHtml+=`<span class="copied-label"><span class="copied-mine-label">✓ copied ${esc(c.date_copied)}</span><button class="uncopy-btn" data-num="${esc(num)}" data-dept="${esc(rowDeptLabel(r))}" data-reporter="${esc(c.reporter)}" title="Remove copied marker">×</button></span>`;
         });
       }
       if (hasOthers) {
@@ -881,10 +920,11 @@ function renderTable() {
         });
       }
 
+      const isNew=newKeys.has(key);
       html+=`<tr class="${rowClass}" data-key="${esc(key)}">
         <td class="col-sel"><input type="checkbox" class="sel-check" ${sel?'checked':''}></td>
-        <td class="col-flag">${f?`<span class="flag-star" title="${esc(f)}">✦</span>`:''}</td>
-        <td class="col-num">${esc(num)}</td>
+        <td class="col-flag">${f?`<span class="flag-star" title="${esc(f)}">✦</span>`:''}${isNew&&!f?'<span class="badge b-green" style="font-size:9px;padding:1px 5px">NEW</span>':''}</td>
+        <td class="col-num">${esc(num)}${num?`<a class="ext-link" href="https://search.open.canada.ca/briefingt/?search_text=%22${encodeURIComponent(num)}%22" target="_blank" rel="noopener" title="Look up on open.canada.ca">↗</a>`:''}</td>
         <td class="col-title">${esc(title)}${f?`<div class="flag-reason">${esc(f)}</div>`:''}${copiedHtml}</td>
         <td class="col-date">${esc(date)}</td>
       </tr>`;
@@ -969,22 +1009,32 @@ function copyAtip() {
     // Deselect the copied rows
     tabRows.forEach(r=>selectedKeys.delete(rowKey(r)));
 
-    // Record locally
+    // Record locally (skip if this reporter already has a record for this note)
     tabRows.forEach(r=>{
       const num=(r['tracking_number']||'').trim();
       if (!num) return;
-      if (!copiedRecords[num]) copiedRecords[num]=[];
-      copiedRecords[num].push({ reporter: activeProfile, date_copied: today });
+      const key=copiedKey(num, rowDeptLabel(r));
+      if (!copiedRecords[key]) copiedRecords[key]=[];
+      if (!copiedRecords[key].some(x=>x.reporter===activeProfile))
+        copiedRecords[key].push({ reporter: activeProfile, date_copied: today });
     });
 
     renderTable();
 
     // Sync to sheet
-    const items=tabRows.map(r=>({
-      tracking_number: r['tracking_number']||'',
-      title:           r['title_en']||'',
-      department:      DEPT_MAP[(r['owner_org']||'').toLowerCase().trim()]||r['owner_org']||'',
-    }));
+    const items=tabRows
+      .filter(r=>{
+        const num=(r['tracking_number']||'').trim();
+        if (!num) return false;
+        const recs=copiedRecords[copiedKey(num, rowDeptLabel(r))]||[];
+        // Only sync the record we just added (date===today); skip pre-existing
+        return recs.some(x=>x.reporter===activeProfile && x.date_copied===today);
+      })
+      .map(r=>({
+        tracking_number: r['tracking_number']||'',
+        title:           r['title_en']||'',
+        department:      rowDeptLabel(r),
+      }));
     if (items.length) {
       try {
         await sheetGet({
@@ -999,15 +1049,14 @@ function copyAtip() {
 }
 
 // ── UNCOPY ────────────────────────────────────────────────────
-async function uncopyRecord(num, reporter) {
-  // Remove from local state
-  if (copiedRecords[num]) {
-    copiedRecords[num]=copiedRecords[num].filter(c=>c.reporter!==reporter);
-    if (!copiedRecords[num].length) delete copiedRecords[num];
+async function uncopyRecord(num, dept, reporter) {
+  const key=copiedKey(num, dept);
+  if (copiedRecords[key]) {
+    copiedRecords[key]=copiedRecords[key].filter(c=>c.reporter!==reporter);
+    if (!copiedRecords[key].length) delete copiedRecords[key];
   }
   renderTable();
-  // Sync to sheet
-  try { await sheetGet({ action:'delete_copied', tracking_number:num, reporter }); }
+  try { await sheetGet({ action:'delete_copied', tracking_number:num, department:dept, reporter }); }
   catch(e) { console.warn('Sheet uncopy sync failed:', e.message); }
 }
 
@@ -1016,11 +1065,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
   loadProfiles().then(()=>loadCopiedRecords());
 
   document.getElementById('table-area').addEventListener('click', e=>{
+    // External link — let it open without toggling the row
+    if (e.target.closest('.ext-link')) { e.stopPropagation(); return; }
     // Uncopy button
     const uncopyBtn=e.target.closest('.uncopy-btn');
     if (uncopyBtn) {
       e.stopPropagation();
-      uncopyRecord(uncopyBtn.dataset.num, uncopyBtn.dataset.reporter);
+      uncopyRecord(uncopyBtn.dataset.num, uncopyBtn.dataset.dept, uncopyBtn.dataset.reporter);
       return;
     }
     // Row selection
