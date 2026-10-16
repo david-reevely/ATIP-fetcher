@@ -293,7 +293,7 @@
       <option value="">— select or create —</option>
     </select>
     <div class="profile-actions">
-      <button id="edit-btn"   onclick="openEditor(false)" disabled>Edit my department list</button>
+      <button id="edit-btn"   onclick="openEditor(false)" disabled>Edit my search terms</button>
       <button id="new-btn"    onclick="openEditor(true)"  class="btn-primary">+ New profile</button>
       <button id="delete-btn" onclick="deleteProfile()"   class="btn-danger" disabled>Delete</button>
     </div>
@@ -620,7 +620,7 @@ function setProfileStatus(msg) { document.getElementById('profile-status').inner
 // ── MODAL ─────────────────────────────────────────────────────
 function openEditor(isNew) {
   isNewProfile = isNew;
-  document.getElementById('modal-title').textContent = isNew ? 'New profile' : 'Edit my department list — ' + activeProfile;
+  document.getElementById('modal-title').textContent = isNew ? 'New profile' : 'Edit my search terms — ' + activeProfile;
   document.getElementById('modal-name').value    = isNew ? '' : activeProfile;
   document.getElementById('modal-name').disabled = !isNew;
   document.getElementById('modal-status').textContent = '';
