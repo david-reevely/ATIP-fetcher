@@ -218,6 +218,27 @@
   .dept-check-slug { font-size: 11px; color: var(--text3); font-family: var(--mono); display: block; }
   .dept-check-watchers { font-size: 11px; color: var(--text3); font-style: italic; margin-top: 1px; display: block; }
   #modal-sel-count { font-size: 12px; color: var(--text3); margin-top: 8px; }
+  .kw-section { margin-top: 14px; padding-top: 12px; border-top: 0.5px solid var(--border); }
+  .kw-section p { font-size: 12px; color: var(--text2); margin-bottom: 6px; }
+  #modal-keywords {
+    width: 100%; height: 90px; font-family: var(--sans); font-size: 13px;
+    padding: 8px 10px; border: 0.5px solid var(--border2); border-radius: var(--radius);
+    background: var(--bg); color: var(--text); resize: vertical; line-height: 1.5;
+  }
+  /* ── VIEW MODE BAR ── */
+  #mode-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 0.75rem; }
+  .seg { display: inline-flex; border: 0.5px solid var(--border2); border-radius: var(--radius); overflow: hidden; }
+  .seg button { border: none; border-radius: 0; height: 30px; background: var(--bg); color: var(--text2); }
+  .seg button + button { border-left: 0.5px solid var(--border2); }
+  .seg button.on { background: var(--blue-bg); color: var(--blue); font-weight: 500; }
+  #kw-summary { font-size: 12px; color: var(--text2); display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+  .kw-chip {
+    font-size: 11px; padding: 1px 7px; border-radius: 20px;
+    background: var(--bg2); border: 0.5px solid var(--border2); color: var(--text2);
+  }
+  .kw-hit { font-size: 11px; color: var(--blue); margin-top: 2px; }
+  .linkish { background: none; border: none; color: var(--blue); cursor: pointer; padding: 0; height: auto; font-size: 12px; text-decoration: underline; }
+  .linkish:hover { background: none; }
 
   .share-section { margin-top: 14px; padding-top: 12px; border-top: 0.5px solid var(--border); }
   .share-section p { font-size: 12px; color: var(--text2); margin-bottom: 6px; }
@@ -279,6 +300,19 @@
     <div id="profile-status"></div>
   </div>
 
+  <!-- VIEW MODE BAR -->
+  <div id="mode-bar" style="display:none">
+    <div class="seg">
+      <button id="mode-depts" onclick="setViewMode('depts')">My departments</button>
+      <button id="mode-kw"    onclick="setViewMode('keywords')">Keywords</button>
+    </div>
+    <div class="seg" id="span-seg" style="display:none">
+      <button id="span-month" onclick="setKwSpan('month')">Selected month</button>
+      <button id="span-all"   onclick="setKwSpan('all')">All five years</button>
+    </div>
+    <span id="kw-summary" style="display:none"></span>
+  </div>
+
   <!-- MAIN TOOLBAR -->
   <div class="toolbar">
     <button id="fetch-btn" onclick="fetchData()" class="btn-primary" disabled>⬇ Fetch latest briefing notes</button>
@@ -335,8 +369,12 @@
       <input type="text" id="dept-filter-input" placeholder="Filter departments…" oninput="filterModalDepts(this.value)">
       <div id="dept-checklist"></div>
       <div id="modal-sel-count"></div>
+      <div class="kw-section">
+        <p><strong>My keywords.</strong> One word or phrase per line. Matches whole words in English titles across every department, ignoring case. End a term with * to match any word starting with it (cyber* catches cyberattack and cybersecurity).</p>
+        <textarea id="modal-keywords" placeholder="cybersecurity&#10;artificial intelligence&#10;quantum*"></textarea>
+      </div>
       <div class="share-section">
-        <p><strong>Share or import a profile.</strong> Copy this string to share your department list with a colleague, or paste one and click Import.</p>
+        <p><strong>Share or import a profile.</strong> Copy this string to share your departments and keywords with a colleague, or paste one and click Import.</p>
         <div class="share-row">
           <input type="text" id="share-string" placeholder="Share string appears here after saving…" readonly onclick="this.select()">
           <button onclick="copyShareString()">Copy</button>
@@ -464,6 +502,13 @@ let isNewProfile  = false;
 let copiedRecords = {};
 let seenKeys      = null;   // Set of rowKeys seen on previous fetch (per profile), or null if first run
 let newKeys       = new Set();  // rowKeys that are new this fetch
+let profileKeywords = {};       // { name: [keyword,...] }
+const KW_STORAGE_KEY = 'atip_v2_keywords';
+let viewMode = 'depts';         // 'depts' | 'keywords'
+let kwSpan   = 'month';         // 'month' | 'all'
+try { viewMode = localStorage.getItem('atip_v2_mode') || 'depts'; kwSpan = localStorage.getItem('atip_v2_kwspan') || 'month'; } catch(e) {}
+let kwMatchers = [];            // [{kw, re}] for the active profile
+let kwHitCache = new WeakMap(); // row object -> [matched keywords]
 
 // ── SHEET API ─────────────────────────────────────────────────
 async function sheetGet(params) {
@@ -480,12 +525,16 @@ async function sheetGet(params) {
 // ── PROFILES ─────────────────────────────────────────────────
 function cacheProfiles() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(profiles)); } catch(e) {}
+  try { localStorage.setItem(KW_STORAGE_KEY, JSON.stringify(profileKeywords)); } catch(e) {}
 }
 
 function loadCachedProfiles() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) { profiles = JSON.parse(raw); rebuildDropdown(); }
+    if (raw) { profiles = JSON.parse(raw); }
+    const kraw = localStorage.getItem(KW_STORAGE_KEY);
+    if (kraw) profileKeywords = JSON.parse(kraw);
+    rebuildDropdown();
   } catch(e) {}
 }
 
@@ -494,9 +543,10 @@ async function loadProfiles() {
   setProfileStatus('<span class="spinner"></span>Syncing…');
   try {
     const d = await sheetGet({ action: 'list_profiles' });
-    profiles = {};
+    profiles = {}; profileKeywords = {};
     (d.profiles || []).forEach(p => {
       profiles[p.name] = (p.departments||'').split(',').map(s=>s.trim()).filter(Boolean);
+      profileKeywords[p.name] = parseKeywordList((p.keywords||'').split('|'));
     });
     cacheProfiles();
     rebuildDropdown();
@@ -514,7 +564,8 @@ function rebuildDropdown() {
   Object.keys(profiles).sort().forEach(name => {
     const opt = document.createElement('option');
     opt.value = name;
-    opt.textContent = name + ' (' + profiles[name].length + ' depts)';
+    const nk = (profileKeywords[name]||[]).length;
+    opt.textContent = name + ' (' + profiles[name].length + ' depts' + (nk ? ', ' + nk + ' keyword' + (nk===1?'':'s') : '') + ')';
     sel.appendChild(opt);
   });
   if (cur && profiles[cur]) sel.value = cur;
@@ -530,10 +581,13 @@ function onProfileChange() {
   document.getElementById('atip-panel').style.display = 'none';
   document.getElementById('app-bottom-spacer').style.height = '0';
   document.getElementById('fallback-area').style.display = 'none';
-  ['month-sel','search-box','sel-all-btn','clear-btn','flag-btn'].forEach(id =>
+  ['month-sel','search-box','sel-all-btn','clear-btn','flag-btn','mode-bar'].forEach(id =>
     document.getElementById(id).style.display = 'none'
   );
+  buildKeywordMatchers();
   if (activeProfile) {
+    // A profile with keywords but no departments starts in keyword mode
+    if (!(profiles[activeProfile]||[]).length && kwMatchers.length) viewMode = 'keywords';
     document.getElementById('fetch-btn').disabled = false;
     const n = profiles[activeProfile].length;
     setStatus('Profile "' + activeProfile + '" — ' + n + ' department' + (n===1?'':'s') + '.');
@@ -549,6 +603,7 @@ async function deleteProfile() {
   if (!confirm('Delete profile "' + activeProfile + '"?')) return;
   const name = activeProfile;
   delete profiles[name];
+  delete profileKeywords[name];
   cacheProfiles();
   activeProfile = null;
   rebuildDropdown();
@@ -572,6 +627,7 @@ function openEditor(isNew) {
   document.getElementById('dept-filter-input').value  = '';
   document.getElementById('share-string').value = '';
   modalChecked = isNew ? new Set() : new Set(profiles[activeProfile] || []);
+  document.getElementById('modal-keywords').value = isNew ? '' : (profileKeywords[activeProfile]||[]).join('\n');
   renderModalChecklist(ALL_DEPTS);
   document.getElementById('modal-overlay').classList.add('open');
   if (isNew) document.getElementById('modal-name').focus();
@@ -625,7 +681,8 @@ function updateModalCount() {
 async function saveProfile() {
   const name = document.getElementById('modal-name').value.trim();
   if (!name)              { alert('Please enter a name.'); return; }
-  if (!modalChecked.size) { alert('Please select at least one department.'); return; }
+  const keywords = parseKeywordList(document.getElementById('modal-keywords').value.split('\n'));
+  if (!modalChecked.size && !keywords.length) { alert('Please select at least one department or enter at least one keyword.'); return; }
   if (isNewProfile && profiles[name] && !confirm('Profile "' + name + '" exists. Overwrite?')) return;
 
   const slugs   = [...modalChecked].sort();
@@ -633,11 +690,12 @@ async function saveProfile() {
   saveBtn.disabled = true;
 
   profiles[name] = slugs;
+  profileKeywords[name] = keywords;
   cacheProfiles();
 
   document.getElementById('modal-status').innerHTML = '<span class="spinner"></span>Saving…';
   try {
-    await sheetGet({ action: 'save_profile', name, departments: slugs.join(',') });
+    await sheetGet({ action: 'save_profile', name, departments: slugs.join(','), keywords: keywords.join('|') });
   } catch(e) {
     console.warn('Sheet sync failed:', e.message);
   }
@@ -656,8 +714,12 @@ async function saveProfile() {
 
 function updateShareString() {
   const name  = isNewProfile ? document.getElementById('modal-name').value.trim() : activeProfile;
-  const slugs = [...modalChecked].sort().join(',');
-  document.getElementById('share-string').value = btoa(unescape(encodeURIComponent(name + ':' + slugs)));
+  const payload = {
+    name,
+    departments: [...modalChecked].sort(),
+    keywords: parseKeywordList(document.getElementById('modal-keywords').value.split('\n')),
+  };
+  document.getElementById('share-string').value = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
 }
 function copyShareString() {
   updateShareString();
@@ -670,11 +732,18 @@ function copyShareString() {
 function importShareString() {
   const s = document.getElementById('share-string').value.trim(); if (!s) { alert('Paste a share string first.'); return; }
   try {
-    const raw   = decodeURIComponent(escape(atob(s)));
-    const colon = raw.indexOf(':');
-    if (colon < 1) throw new Error('bad format');
-    const name  = raw.substring(0, colon).trim();
-    const slugs = raw.substring(colon+1).split(',').map(x=>x.trim()).filter(Boolean);
+    const raw = decodeURIComponent(escape(atob(s)));
+    let name, slugs, kws = [];
+    if (raw.trim().startsWith('{')) {
+      const obj = JSON.parse(raw);
+      name = (obj.name||'').trim(); slugs = obj.departments||[]; kws = parseKeywordList(obj.keywords||[]);
+    } else {  // older name:slug,slug format
+      const colon = raw.indexOf(':');
+      if (colon < 1) throw new Error('bad format');
+      name  = raw.substring(0, colon).trim();
+      slugs = raw.substring(colon+1).split(',').map(x=>x.trim()).filter(Boolean);
+    }
+    document.getElementById('modal-keywords').value = kws.join('\n');
     document.getElementById('modal-name').value    = name;
     document.getElementById('modal-name').disabled = false;
     isNewProfile = true;
@@ -684,6 +753,76 @@ function importShareString() {
     renderModalChecklist(ALL_DEPTS);
     document.getElementById('modal-status').textContent = 'Imported — review and click Save.';
   } catch(e) { alert('Could not read that share string.'); }
+}
+
+// ── KEYWORDS ──────────────────────────────────────────────────
+function parseKeywordList(list) {
+  const seen = new Set(), out = [];
+  (list||[]).forEach(k => {
+    const t = (k||'').replace(/\s+/g,' ').trim();
+    if (t && !seen.has(t.toLowerCase())) { seen.add(t.toLowerCase()); out.push(t); }
+  });
+  return out;
+}
+
+function keywordRegex(kw) {
+  // Whole-word, case-insensitive; trailing * matches any word continuation
+  let stem = kw, wild = false;
+  if (stem.endsWith('*')) { wild = true; stem = stem.slice(0,-1).trim(); }
+  if (!stem) return null;
+  const body = stem.split(' ').map(w => w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('[\\s\\-]+');
+  return new RegExp('(?<![A-Za-z0-9À-ÿ])' + body + (wild ? '[A-Za-z0-9À-ÿ]*' : '(?![A-Za-z0-9À-ÿ])'), 'i');
+}
+
+function buildKeywordMatchers() {
+  kwMatchers = [];
+  kwHitCache = new WeakMap();
+  (activeProfile ? (profileKeywords[activeProfile]||[]) : []).forEach(kw => {
+    const re = keywordRegex(kw);
+    if (re) kwMatchers.push({ kw, re });
+  });
+}
+
+function rowKeywordHits(row) {
+  if (!kwMatchers.length) return [];
+  let hits = kwHitCache.get(row);
+  if (!hits) {
+    const t = row['title_en'] || '';
+    hits = kwMatchers.filter(m => m.re.test(t)).map(m => m.kw);
+    kwHitCache.set(row, hits);
+  }
+  return hits;
+}
+
+function setViewMode(mode) {
+  viewMode = mode;
+  try { localStorage.setItem('atip_v2_mode', mode); } catch(e) {}
+  syncModeBar();
+  renderTable();
+}
+
+function setKwSpan(span) {
+  kwSpan = span;
+  try { localStorage.setItem('atip_v2_kwspan', span); } catch(e) {}
+  syncModeBar();
+  renderTable();
+}
+
+function syncModeBar() {
+  const kwMode = viewMode === 'keywords';
+  document.getElementById('mode-depts').classList.toggle('on', !kwMode);
+  document.getElementById('mode-kw').classList.toggle('on', kwMode);
+  document.getElementById('span-seg').style.display = kwMode && kwMatchers.length ? '' : 'none';
+  document.getElementById('span-month').classList.toggle('on', kwSpan === 'month');
+  document.getElementById('span-all').classList.toggle('on', kwSpan === 'all');
+  // Month picker only matters when it is actually filtering
+  document.getElementById('month-sel').style.display = (kwMode && kwSpan === 'all') ? 'none' : '';
+  const sum = document.getElementById('kw-summary');
+  if (!kwMode) { sum.style.display = 'none'; return; }
+  sum.style.display = '';
+  sum.innerHTML = kwMatchers.length
+    ? kwMatchers.map(m => `<span class="kw-chip">${esc(m.kw)}</span>`).join('') + ' <button class="linkish" onclick="openEditor(false)">edit</button>'
+    : 'No keywords saved yet. <button class="linkish" onclick="openEditor(false)">Add keywords</button>';
 }
 
 // ── COPIED RECORDS ────────────────────────────────────────────
@@ -775,7 +914,7 @@ function computeNewKeys() {
   const currentKeys = [];
   allRows.forEach(r => {
     const slug=(r['owner_org']||'').toLowerCase().trim();
-    if (!depts.has(slug)) return;
+    if (!depts.has(slug) && !rowKeywordHits(r).length) return;
     currentKeys.push(rowKey(r));
   });
   let prev = null;
@@ -795,6 +934,8 @@ function processCSV(text) {
   document.getElementById('fallback-area').style.display='none';
   populateMonthFilter();
   ['month-sel','search-box','sel-all-btn','clear-btn','flag-btn'].forEach(id=>document.getElementById(id).style.display='');
+  document.getElementById('mode-bar').style.display='';
+  syncModeBar();
   renderTable();
 }
 
@@ -836,9 +977,12 @@ function getFilteredRows() {
   const depts  = new Set(profiles[activeProfile]||[]);
   const period = document.getElementById('month-sel').value;
   const q      = (document.getElementById('search-box').value||'').toLowerCase();
+  const kwMode = viewMode === 'keywords';
+  if (kwMode && !kwMatchers.length) return [];
   return allRows.filter(r=>{
-    if (getRowPeriod(r)!==period) return false;
-    if (!depts.has((r['owner_org']||'').toLowerCase().trim())) return false;
+    if (!(kwMode && kwSpan==='all') && getRowPeriod(r)!==period) return false;
+    if (kwMode) { if (!rowKeywordHits(r).length) return false; }
+    else if (!depts.has((r['owner_org']||'').toLowerCase().trim())) return false;
     if (q) {
       const title=(r['title_en']||'').toLowerCase();
       const num=(r['tracking_number']||'').toLowerCase();
@@ -855,11 +999,19 @@ function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function renderTable() {
   const rows=getFilteredRows();
   const area=document.getElementById('table-area');
-  if (!rows.length) { area.innerHTML='<div class="empty">No briefing notes match the current filters.</div>'; updateStatusBar(rows); return; }
+  if (!rows.length) {
+    const msg = (viewMode==='keywords' && !kwMatchers.length)
+      ? 'Add keywords to your profile to search across departments.'
+      : 'No briefing notes match the current filters.';
+    area.innerHTML='<div class="empty">'+msg+'</div>'; updateStatusBar(rows); renderAtipPanel(); return;
+  }
+  const kwMode = viewMode==='keywords';
 
   const byOrg={};
   rows.forEach(r=>{const slug=(r['owner_org']||'').toLowerCase().trim(); if(!byOrg[slug])byOrg[slug]=[]; byOrg[slug].push(r);});
   const orgEntries=Object.entries(byOrg).sort((a,b)=>(DEPT_MAP[a[0]]||a[0]).localeCompare(DEPT_MAP[b[0]]||b[0]));
+  // Across five years, newest first within each department
+  if (kwMode && kwSpan==='all') orgEntries.forEach(([,list])=>list.sort((a,b)=>(b['date_received']||'').localeCompare(a['date_received']||'')));
 
   let html='';
   orgEntries.forEach(([slug,orgRows])=>{
@@ -925,7 +1077,7 @@ function renderTable() {
         <td class="col-sel"><input type="checkbox" class="sel-check" ${sel?'checked':''}></td>
         <td class="col-flag">${f?`<span class="flag-star" title="${esc(f)}">✦</span>`:''}${isNew&&!f?'<span class="badge b-green" style="font-size:9px;padding:1px 5px">NEW</span>':''}</td>
         <td class="col-num">${esc(num)}${num?`<a class="ext-link" href="https://search.open.canada.ca/briefingt/?search_text=%22${encodeURIComponent(num)}%22" target="_blank" rel="noopener" title="Look up on open.canada.ca">↗</a>`:''}</td>
-        <td class="col-title">${esc(title)}${f?`<div class="flag-reason">${esc(f)}</div>`:''}${copiedHtml}</td>
+        <td class="col-title">${esc(title)}${f?`<div class="flag-reason">${esc(f)}</div>`:''}${kwMode?`<div class="kw-hit">⌕ ${esc(rowKeywordHits(r).join(', '))}</div>`:''}${copiedHtml}</td>
         <td class="col-date">${esc(date)}</td>
       </tr>`;
     });
@@ -952,7 +1104,14 @@ function updateStatusBar(filtered) {
   const fCount=Object.keys(flagged).length;
   const sCount=selectedKeys.size;
   const n=activeProfile?(profiles[activeProfile]||[]).length:0;
-  let html=`<span>${filtered.length.toLocaleString()} notes · ${n} department${n===1?'':'s'}</span>`;
+  let html;
+  if (viewMode==='keywords') {
+    const k=kwMatchers.length;
+    const span=kwSpan==='all'?'all five years':formatPeriod(document.getElementById('month-sel').value||'');
+    html=`<span>${filtered.length.toLocaleString()} notes matching ${k} keyword${k===1?'':'s'} · ${esc(span)}</span>`;
+  } else {
+    html=`<span>${filtered.length.toLocaleString()} notes · ${n} department${n===1?'':'s'}</span>`;
+  }
   if (fCount) html+=`<span class="badge b-amber">✦ ${fCount} flagged</span>`;
   if (sCount) html+=`<span class="badge b-blue">${sCount} selected</span>`;
   document.getElementById('status-bar').innerHTML=html;
