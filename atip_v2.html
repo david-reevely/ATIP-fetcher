@@ -833,6 +833,17 @@ function rowDeptLabel(row) {
   return DEPT_MAP[slug] || row['owner_org'] || '';
 }
 
+// The Sheet stores dates as YYYY-MM-DD, but Apps Script can hand them back as
+// full timestamps ("Wed Aug 12 2026 00:00:00 GMT-0400 ..."). Show YYYY-MM-DD.
+function normalizeDate(s) {
+  s = String(s||'').trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  const pad = n => String(n).padStart(2,'0');
+  return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate());
+}
+
 async function loadCopiedRecords() {
   try {
     const d = await sheetGet({ action: 'list_copied' });
@@ -840,7 +851,7 @@ async function loadCopiedRecords() {
     (d.records || []).forEach(rec => {
       const key = copiedKey(rec.tracking_number, rec.department);
       if (!copiedRecords[key]) copiedRecords[key] = [];
-      copiedRecords[key].push({ reporter: rec.reporter, date_copied: rec.date_copied });
+      copiedRecords[key].push({ reporter: rec.reporter, date_copied: normalizeDate(rec.date_copied) });
     });
   } catch(e) {
     console.warn('Could not load copied records:', e.message);
